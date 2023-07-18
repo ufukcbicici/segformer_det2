@@ -347,4 +347,16 @@ def _get_builtin_metadata(dataset_name):
             "thing_classes": CITYSCAPES_THING_CLASSES,
             "stuff_classes": CITYSCAPES_STUFF_CLASSES,
         }
+    elif dataset_name == "soilcover":
+        # fmt: off
+        SOILCOVER_THING_CLASSES = [
+        ]
+        SOILCOVER_STUFF_CLASSES = [
+            "soil", "living_org", "dead_org", "stone",
+        ]
+        # fmt: on
+        return {
+            "thing_classes": SOILCOVER_THING_CLASSES,
+            "stuff_classes": SOILCOVER_STUFF_CLASSES,
+        }
     raise KeyError("No built-in metadata for dataset {}".format(dataset_name))
