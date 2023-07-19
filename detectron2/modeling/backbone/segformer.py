@@ -1,6 +1,7 @@
 from math import sqrt
 from functools import partial
 import torch
+import numpy as np
 from torch import nn, einsum
 import torch.nn.functional as F
 
@@ -136,6 +137,8 @@ class MiT(nn.Module):
         self.headsList = []
         self.reductionRatioList = []
 
+        self._out_features = []
+
         for (dim_in, dim_out), (kernel, stride, padding), num_layers, ff_expansion, heads, reduction_ratio in zip(
                 dim_pairs, stage_kernel_stride_pad, num_layers, ff_expansion, heads, reduction_ratio):
 
@@ -163,11 +166,14 @@ class MiT(nn.Module):
                 layers
             ]))
 
-    def forward(
-            self,
-            x,
-            return_layer_outputs=False
-    ):
+        for stage_id in range(len(self.stages)):
+            self._out_features.append("mit_stage_{0}".format(stage_id))
+
+    @property
+    def out_features(self):
+        return self._out_features
+
+    def forward(self, x):
         h, w = x.shape[-2:]
 
         layer_outputs = []
@@ -185,7 +191,7 @@ class MiT(nn.Module):
 
             layer_outputs.append(x)
 
-        ret = x if not return_layer_outputs else layer_outputs
+        ret = layer_outputs
         return ret
 
 
@@ -209,6 +215,8 @@ class Segformer(Backbone):
         self.decoderDim = decoder_dim
         self.numClasses = num_classes
 
+        self._out_features = []
+
         dims, heads, ff_expansion, reduction_ratio, num_layers = map(partial(cast_tuple, depth=4), (
         dims, heads, ff_expansion, reduction_ratio, num_layers))
         assert all([*map(lambda t: len(t) == 4, (dims, heads, ff_expansion, reduction_ratio,
@@ -224,6 +232,8 @@ class Segformer(Backbone):
             num_layers=num_layers
         )
 
+        self._out_features.extend(self.mit.out_features)
+
         self.to_fused = nn.ModuleList([nn.Sequential(
             nn.Conv2d(dim, decoder_dim, 1),
             nn.Upsample(scale_factor=2 ** i)
@@ -234,14 +244,26 @@ class Segformer(Backbone):
             nn.Conv2d(decoder_dim, num_classes, 1),
         )
 
+        # Run the model with an empty input to calculate the number of output channels
+        images = torch.from_numpy(np.random.uniform(size=(8, 3, 512, 512))).to(torch.float)
+        print("X")
+
+
+    @property
+    def out_features(self):
+        return self._out_features
+
     def forward(self, x):
         outputs = {}
-        layer_outputs = self.mit(x, return_layer_outputs=True)
+        layer_outputs = self.mit(x)
 
         fused = [to_fused(output) for output, to_fused in zip(layer_outputs, self.to_fused)]
         fused = torch.cat(fused, dim=1)
         final_map = self.to_segmentation(fused)
         outputs["segformer"] = final_map
+        for mit_stage_id, mit_stage_name in enumerate(self.mit.out_features):
+            outputs[mit_stage_name] = layer_outputs[mit_stage_id]
+
         return outputs
 
     def output_shape(self):

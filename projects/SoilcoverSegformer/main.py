@@ -20,6 +20,10 @@ It also includes fewer abstraction, therefore is easier to add custom logic.
 """
 import torch
 import numpy as np
+
+from detectron2.config import get_cfg
+from detectron2.layers import ShapeSpec
+from detectron2.modeling import build_resnet_backbone
 from detectron2.modeling.backbone.segformer import Segformer
 
 # import logging
@@ -210,11 +214,21 @@ from detectron2.modeling.backbone.segformer import Segformer
 if __name__ == "__main__":
     # --config-file configs/pointrend_semantic_R_101_FPN_1x_cityscapes.yaml --num-gpus 8
 
-    model = Segformer()
+    cfg = get_cfg()
+    resnet = build_resnet_backbone(cfg, ShapeSpec(channels=3))
 
-    images = torch.from_numpy(np.random.uniform(size=(16, 3, 512, 512))).to(torch.float)
-    res = model(images)
-    print("X")
+    scripted_resnet = torch.jit.script(resnet)
+
+    inp = torch.rand(2, 3, 100, 100)
+    out1 = resnet(inp)["res4"]
+    out2 = scripted_resnet(inp)["res4"]
+
+
+    # model = Segformer()
+    #
+    # images = torch.from_numpy(np.random.uniform(size=(16, 3, 512, 512))).to(torch.float)
+    # res = model(images)
+    # print("X")
 
     # args = default_argument_parser().parse_args()
     # print("Command Line Args:", args)
