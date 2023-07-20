@@ -8,8 +8,30 @@ import torch.nn.functional as F
 from einops import rearrange, reduce
 from einops.layers.torch import Rearrange
 
+from detectron2.config import get_cfg, configurable
 from detectron2.layers import ShapeSpec
-from detectron2.modeling import Backbone
+from detectron2.modeling import Backbone, BACKBONE_REGISTRY, SEM_SEG_HEADS_REGISTRY
+from detectron2.config import CfgNode as CN
+
+
+def get_segformer_config(config_file):
+    """
+    Add default config for Segformer.
+    """
+    _C = get_cfg()
+    _C.MODEL.SEGFORMER = CN()
+
+    _C.MODEL.SEGFORMER.LAYER_DIMENSIONS = (32, 64, 160, 256)
+    _C.MODEL.SEGFORMER.ATTENTION_HEADS = (1, 2, 5, 8)
+    _C.MODEL.SEGFORMER.FEED_FORWARD_EXPANSION_RATIOS = (8, 8, 4, 4)
+    _C.MODEL.SEGFORMER.ATTENTION_REDUCTION_RATIOS = (8, 4, 2, 1)
+    _C.MODEL.SEGFORMER.NUM_OF_EFFICIENT_SELF_ATTENTION_AND_MIX_FEED_FORWARD_LAYERS = 2
+    _C.MODEL.SEGFORMER.NUM_OF_INPUT_CHANNELS = 3
+    _C.MODEL.SEGFORMER.DECODER_DIMENSION = 256
+    _C.MODEL.SEGFORMER.NUM_CLASSES = 4
+
+    _C.merge_from_file(config_file)
+    return _C
 
 
 # helpers
@@ -195,7 +217,7 @@ class MiT(nn.Module):
         return ret
 
 
-class Segformer(Backbone):
+class SegformerBackbone(Backbone):
     def __init__(self,
                  dims,
                  heads,
@@ -216,9 +238,11 @@ class Segformer(Backbone):
         self.numClasses = num_classes
 
         self._out_features = []
+        self._out_feature_channels = {}
+        self._out_feature_strides = {}
 
         dims, heads, ff_expansion, reduction_ratio, num_layers = map(partial(cast_tuple, depth=4), (
-        dims, heads, ff_expansion, reduction_ratio, num_layers))
+            dims, heads, ff_expansion, reduction_ratio, num_layers))
         assert all([*map(lambda t: len(t) == 4, (dims, heads, ff_expansion, reduction_ratio,
                                                  num_layers))]), \
             'only four stages are allowed, all keyword arguments must be either a single value or a tuple of 4 values'
@@ -234,20 +258,23 @@ class Segformer(Backbone):
 
         self._out_features.extend(self.mit.out_features)
 
-        self.to_fused = nn.ModuleList([nn.Sequential(
-            nn.Conv2d(dim, decoder_dim, 1),
-            nn.Upsample(scale_factor=2 ** i)
-        ) for i, dim in enumerate(dims)])
-
-        self.to_segmentation = nn.Sequential(
-            nn.Conv2d(4 * decoder_dim, decoder_dim, 1),
-            nn.Conv2d(decoder_dim, num_classes, 1),
-        )
+        # self.to_fused = nn.ModuleList([nn.Sequential(
+        #     nn.Conv2d(dim, decoder_dim, 1),
+        #     nn.Upsample(scale_factor=2 ** i)
+        # ) for i, dim in enumerate(dims)])
+        #
+        # self.to_segmentation = nn.Sequential(
+        #     nn.Conv2d(4 * decoder_dim, decoder_dim, 1),
+        #     nn.Conv2d(decoder_dim, num_classes, 1),
+        # )
 
         # Run the model with an empty input to calculate the number of output channels
         images = torch.from_numpy(np.random.uniform(size=(8, 3, 512, 512))).to(torch.float)
-        print("X")
-
+        self.eval()
+        outputs = self(images)
+        for output_name, v in outputs.items():
+            self._out_feature_channels[output_name] = v.shape[1]
+            self._out_feature_strides[output_name] = None
 
     @property
     def out_features(self):
@@ -257,10 +284,10 @@ class Segformer(Backbone):
         outputs = {}
         layer_outputs = self.mit(x)
 
-        fused = [to_fused(output) for output, to_fused in zip(layer_outputs, self.to_fused)]
-        fused = torch.cat(fused, dim=1)
-        final_map = self.to_segmentation(fused)
-        outputs["segformer"] = final_map
+        # fused = [to_fused(output) for output, to_fused in zip(layer_outputs, self.to_fused)]
+        # fused = torch.cat(fused, dim=1)
+        # final_map = self.to_segmentation(fused)
+        # outputs["segformer"] = final_map
         for mit_stage_id, mit_stage_name in enumerate(self.mit.out_features):
             outputs[mit_stage_name] = layer_outputs[mit_stage_id]
 
@@ -278,3 +305,129 @@ class Segformer(Backbone):
             )
             for name in self._out_features
         }
+
+
+@SEM_SEG_HEADS_REGISTRY.register()
+class SegformerHead(nn.Module):
+    @configurable
+    def __init__(self, dims, decoder_dim, num_classes):
+        super().__init__()
+        self.dims = dims
+        self.decoderDim = decoder_dim
+        self.numClasses = num_classes
+
+        self.to_fused = nn.ModuleList([nn.Sequential(
+            nn.Conv2d(dim, decoder_dim, 1),
+            nn.Upsample(scale_factor=2 ** i)
+        ) for i, dim in enumerate(dims)])
+
+        self.to_segmentation = nn.Sequential(
+            nn.Conv2d(4 * decoder_dim, decoder_dim, 1),
+            nn.Conv2d(decoder_dim, num_classes, 1),
+        )
+
+    # We don't need input_shape
+    @classmethod
+    def from_config(cls, cfg, input_shape):
+        return {
+            "dims": cfg.MODEL.SEGFORMER.LAYER_DIMENSIONS,
+            "decoder_dim": cfg.MODEL.SEGFORMER.DECODER_DIMENSION,
+            "num_classes": cfg.MODEL.SEGFORMER.NUM_CLASSES
+        }
+
+    #TODO: Convert this into Segformer compatible format.
+    def losses(self, predictions, targets):
+        predictions = predictions.float()  # https://github.com/pytorch/pytorch/issues/48163
+        predictions = F.interpolate(
+            predictions,
+            scale_factor=self.common_stride,
+            mode="bilinear",
+            align_corners=False,
+        )
+        loss = F.cross_entropy(
+            predictions, targets, reduction="mean", ignore_index=self.ignore_value
+        )
+        losses = {"loss_sem_seg": loss * self.loss_weight}
+        return losses
+
+    def forward(self, features, targets=None):
+        """
+        Returns:
+            In training, returns (None, dict of losses)
+            In inference, returns (CxHxW logits, {})
+        """
+        assert isinstance(features, dict) and len(features) == 4
+        features_sorted = []
+        for stage_id in range(len(features)):
+            feature_name = "mit_stage_{0}".format(stage_id)
+            features_sorted.append(features[feature_name])
+
+        fused = [to_fused(output) for output, to_fused in zip(features_sorted, self.to_fused)]
+        fused = torch.cat(fused, dim=1)
+        final_map = self.to_segmentation(fused)
+
+        if self.training:
+            return None, self.losses(final_map, targets)
+        else:
+            return final_map, {}
+
+#
+#     def forward(self, features, targets=None):
+#         """
+#         Returns:
+#             In training, returns (None, dict of losses)
+#             In inference, returns (CxHxW logits, {})
+#         """
+#         x = self.layers(features)
+#         if self.training:
+#             return None, self.losses(x, targets)
+#         else:
+#             x = F.interpolate(
+#                 x, scale_factor=self.common_stride, mode="bilinear", align_corners=False
+#             )
+#             return x, {}
+#
+#     def layers(self, features):
+#         for i, f in enumerate(self.in_features):
+#             if i == 0:
+#                 x = self.scale_heads[i](features[f])
+#             else:
+#                 x = x + self.scale_heads[i](features[f])
+#         x = self.predictor(x)
+#         return x
+#
+#     def losses(self, predictions, targets):
+#         predictions = predictions.float()  # https://github.com/pytorch/pytorch/issues/48163
+#         predictions = F.interpolate(
+#             predictions,
+#             scale_factor=self.common_stride,
+#             mode="bilinear",
+#             align_corners=False,
+#         )
+#         loss = F.cross_entropy(
+#             predictions, targets, reduction="mean", ignore_index=self.ignore_value
+#         )
+#         losses = {"loss_sem_seg": loss * self.loss_weight}
+#         return losses
+#
+
+@BACKBONE_REGISTRY.register()
+def build_segformer_backbone(cfg, input_shape):
+    dims = cfg.MODEL.SEGFORMER.LAYER_DIMENSIONS
+    heads = cfg.MODEL.SEGFORMER.ATTENTION_HEADS
+    ff_expansion = cfg.MODEL.SEGFORMER.FEED_FORWARD_EXPANSION_RATIOS
+    reduction_ratio = cfg.MODEL.SEGFORMER.ATTENTION_REDUCTION_RATIOS
+    num_layers = cfg.MODEL.SEGFORMER.NUM_OF_EFFICIENT_SELF_ATTENTION_AND_MIX_FEED_FORWARD_LAYERS
+    channels = cfg.MODEL.SEGFORMER.NUM_OF_INPUT_CHANNELS
+    decoder_dim = cfg.MODEL.SEGFORMER.DECODER_DIMENSION
+    num_classes = cfg.MODEL.SEGFORMER.NUM_CLASSES
+
+    segformer_backbone = SegformerBackbone(dims=dims,
+                                           heads=heads,
+                                           ff_expansion=ff_expansion,
+                                           reduction_ratio=reduction_ratio,
+                                           num_layers=num_layers,
+                                           channels=channels,
+                                           decoder_dim=decoder_dim,
+                                           num_classes=num_classes)
+    return segformer_backbone
