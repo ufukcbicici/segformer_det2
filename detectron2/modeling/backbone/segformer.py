@@ -340,14 +340,14 @@ class SegformerHead(nn.Module):
         predictions = predictions.float()  # https://github.com/pytorch/pytorch/issues/48163
         predictions = F.interpolate(
             predictions,
-            scale_factor=self.common_stride,
+            scale_factor=4,
             mode="bilinear",
             align_corners=False,
         )
         loss = F.cross_entropy(
             predictions, targets, reduction="mean", ignore_index=self.ignore_value
         )
-        losses = {"loss_sem_seg": loss * self.loss_weight}
+        losses = {"loss_sem_seg": loss}
         return losses
 
     def forward(self, features, targets=None):
