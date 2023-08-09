@@ -245,7 +245,7 @@ def default_writers(output_dir: str, max_iter: Optional[int] = None):
         # It may not always print what you want to see, since it prints "common" metrics only.
         CommonMetricPrinter(max_iter),
         JSONWriter(os.path.join(output_dir, "metrics.json")),
-        TensorboardXWriter(output_dir),
+        # TensorboardXWriter(output_dir),
     ]
 
 

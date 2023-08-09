@@ -2,14 +2,86 @@ MODEL:
   META_ARCHITECTURE: "SemanticSegmentor"
   BACKBONE:
     NAME: "build_segformer_backbone"
+  DEVICE: "cuda"
+
+  WEIGHTS: "./pretrained/mit_b0.pth"
 
   SEGFORMER:
+    MODEL_TYPE: "mit_b0"
+    USE_PRETRAINED_BACKBONE: True
     LAYER_DIMENSIONS: (32, 64, 160, 256)
     ATTENTION_HEADS: (1, 2, 5, 8)
-    FEED_FORWARD_EXPANSION_RATIOS: (8, 8, 4, 4)
+    FEED_FORWARD_EXPANSION_RATIOS: (4, 4, 4, 4)
     ATTENTION_REDUCTION_RATIOS: (8, 4, 2, 1)
-    NUM_OF_EFFICIENT_SELF_ATTENTION_AND_MIX_FEED_FORWARD_LAYERS: 2
+    NUM_OF_EFFICIENT_SELF_ATTENTION_AND_MIX_FEED_FORWARD_LAYERS: (2, 2, 2, 2)
     NUM_OF_INPUT_CHANNELS: 3
     DECODER_DIMENSION: 256
     NUM_CLASSES: 4
+
+  SEM_SEG_HEAD:
+    NAME: "SegformerHead"
+    IGNORE_VALUE: 255
+
+SOLVER:
+  LR_SCHEDULER_NAME: "WarmupPolyLR"
+  MAX_ITER: 160000
+  BASE_LR: 0.00006
+  BETAS: (0.9, 0.999)
+  WEIGHT_DECAY: 0.01
+  HEAD_LR_MULTIPLIER: 10.0
+  POLY_POWER: 1.0
+  RESCALE_INTERVAL: True
+  WARMUP_FACTOR: 1e-6
+  WARMUP_ITERS: 8000
+  WARMUP_METHOD: "linear"
+  IMS_PER_BATCH: 12
+  BACKBONE_REGULAR_DECAY_MULTIPLIER: 1.0
+  BACKBONE_NORM_DECAY_MULTIPLIER: 0.0
+  HEAD_REGULAR_DECAY_MULTIPLIER: 1.0
+  HEAD_NORM_DECAY_MULTIPLIER: 0.0
+
+
+DATASETS:
+  TRAIN: ("soilcover_train",)
+  TEST: ("soilcover_val",)
+  SOILCOVER:
+    # Local 
+    # TRAIN_FILES: ("C://Users//ufuk.bicici//Documents//soilcover_20220316_noJesiBonirob//train//img//remap", "C://Users//ufuk.bicici//Documents//soilcover_20220316_noJesiBonirob//train//lbl//remap")
+    # VALIDATION_FILES: ("C://Users//ufuk.bicici//Documents//soilcover_20220316_noJesiBonirob//valid//img//remap", "C://Users//ufuk.bicici//Documents//soilcover_20220316_noJesiBonirob//valid//lbl//remap")
+    # TEST_FILES: ("C://Users//ufuk.bicici//Documents//soilcover_20220316_noJesiBonirob//test//img//remap", "C://Users//ufuk.bicici//Documents//soilcover_20220316_noJesiBonirob//test//lbl//remap")
+
+    # GPU Server
+    TRAIN_FILES: ("/home/josres/data/SoilcoverSegformer/soilcover_20220316_noJesiBonirob//train//img//remap", "/home/josres/data/SoilcoverSegformer/soilcover_20220316_noJesiBonirob//train//lbl//remap")
+    VALIDATION_FILES: ("/home/josres/data/SoilcoverSegformer/soilcover_20220316_noJesiBonirob//valid//img//remap", "/home/josres/data/SoilcoverSegformer/soilcover_20220316_noJesiBonirob//valid//lbl//remap")
+    TEST_FILES: ("/home/josres/data/SoilcoverSegformer/soilcover_20220316_noJesiBonirob//test//img//remap", "/home/josres/data/SoilcoverSegformer/soilcover_20220316_noJesiBonirob//test//lbl//remap")
+
+
+    CALCULATE_DATASET_STATISTICS: False
+
+    TRAIN_MEAN_PIXELS: (97.91994301, 119.2555792, 122.41757285)
+    TRAIN_STD_PIXELS: (40.29891338, 43.95589405, 42.63877606)
+    VALIDATION_MEAN_PIXELS: (93.66205379, 114.35549869, 120.01180315)
+    VALIDATION_STD_PIXELS: (39.25110385, 43.04006034, 43.34496203)
+    TEST_MEAN_PIXELS: (90.6475933, 108.09947494, 118.78614642)
+    TEST_STD_PIXELS: (41.32280935, 43.90018403, 43.38480999)
+
+    TRAIN_LABELS: (0, 1, 2, 3)
+    VALIDATION_LABELS: (0, 1, 2, 3)
+    TEST_LABELS: (0, 1, 2, 3)
+
+DATALOADER:
+  NUM_WORKERS: 0
+
+TEST:
+  EVAL_PERIOD: 1000
+
+INPUT:
+  COLOR_AUG_SSD: False
+  MIN_SIZE_TRAIN: (512,)
+  MIN_SIZE_TEST: 512
+  MAX_SIZE_TRAIN: 704
+  MAX_SIZE_TEST: 704
+
+
 VERSION: 2
+

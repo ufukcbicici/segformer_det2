@@ -207,7 +207,7 @@ def train(cfg, args):
         trainer_params["resume_from_checkpoint"] = last_checkpoint
         logger.info(f"Resuming training from checkpoint: {last_checkpoint}.")
 
-    trainer = pl.Trainer(**trainer_params)
+    trainer = pl.SegformerTrainer(**trainer_params)
     logger.info(f"start to train with {args.num_machines} nodes and {args.num_gpus} GPUs")
 
     module = TrainingModule(cfg)
