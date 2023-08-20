@@ -59,7 +59,7 @@ def build_sem_seg_train_aug(cfg):
     augs.append(T.RandomFlip())
     return augs
 
-
+# Newest
 class SegformerTrainer(DefaultTrainer):
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
