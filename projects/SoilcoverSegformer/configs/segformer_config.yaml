@@ -73,7 +73,8 @@ DATALOADER:
   NUM_WORKERS: 0
 
 TEST:
-  EVAL_PERIOD: 1000
+  EVAL_PERIOD: 1
+  OUTPUT_DB: "sqlite:////home/josres/det2_clean/projects/SoilcoverSegformer/logger.db"
 
 INPUT:
   COLOR_AUG_SSD: False

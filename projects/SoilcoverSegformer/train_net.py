@@ -23,19 +23,24 @@ import logging
 import os
 
 import numpy as np
+import pandas as pd
 import torch
 from fvcore.common.param_scheduler import MultiStepParamScheduler, CosineParamScheduler, \
     StepWithFixedGammaParamScheduler, PolynomialDecayParamScheduler
+from fvcore.nn import get_bn_modules
+from sqlalchemy import create_engine, MetaData, Table, select, func, insert
 
 import detectron2.data.transforms as T
 from detectron2.data import DatasetMapper, MetadataCatalog, build_detection_train_loader, DatasetCatalog
 from detectron2.data.datasets.soilcover import register_all_soilcover
 from detectron2.data.samplers import TrainingSampler
-from detectron2.engine import DefaultTrainer
+from detectron2.engine import DefaultTrainer, hooks
 from detectron2.evaluation import SemSegEvaluator, COCOEvaluator, COCOPanopticEvaluator, DatasetEvaluators
 from detectron2.modeling.backbone.segformer import get_segformer_config, MixVisionTransformer
 from detectron2.solver import WarmupParamScheduler, LRMultiplier
 from detectron2.solver.build import maybe_add_gradient_clipping
+from detectron2.utils import comm
+from eval_hook_with_db_logging import EvalHookWithDbLogging
 from projects.PointRend.point_rend import ColorAugSSDTransform
 
 
@@ -59,8 +64,30 @@ def build_sem_seg_train_aug(cfg):
     augs.append(T.RandomFlip())
     return augs
 
+
 # Newest
 class SegformerTrainer(DefaultTrainer):
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.runId = -1
+
+        # Record to logs db if needed.
+        if cfg.TEST.OUTPUT_DB is not None or cfg.TEST.OUTPUT_DB != "":
+            db_engine = create_engine(url=cfg.TEST.OUTPUT_DB, echo=False)
+            db_meta = MetaData(bind=db_engine)
+            run_meta_data_table = Table("run_meta_data", db_meta, autoload_with=db_engine)
+            # Get the current run id
+            with db_engine.connect() as connection:
+                stmt = select([func.max(run_meta_data_table.c["run_id"]).label("max_run_id")])
+                df = pd.read_sql(sql=stmt, con=connection)
+                assert df.shape[0] == 1
+                max_run_id = df["max_run_id"].iloc[0]
+                if max_run_id is None:
+                    self.runId = 0
+                else:
+                    self.runId = int(max_run_id) + 1
+
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
         if output_folder is None:
@@ -202,15 +229,15 @@ class SegformerTrainer(DefaultTrainer):
                 base_value=1.0,
                 power=cfg.SOLVER.POLY_POWER
             )
-                # sched  WarmupPolyLR(
-                #     optimizer,
-                #     cfg.SOLVER.MAX_ITER,
-                #     warmup_factor=cfg.SOLVER.WARMUP_FACTOR,
-                #     warmup_iters=cfg.SOLVER.WARMUP_ITERS,
-                #     warmup_method=cfg.SOLVER.WARMUP_METHOD,
-                #     power=cfg.SOLVER.POLY_LR_POWER,
-                #     constant_ending=cfg.SOLVER.POLY_LR_CONSTANT_ENDING,
-                # )
+            # sched  WarmupPolyLR(
+            #     optimizer,
+            #     cfg.SOLVER.MAX_ITER,
+            #     warmup_factor=cfg.SOLVER.WARMUP_FACTOR,
+            #     warmup_iters=cfg.SOLVER.WARMUP_ITERS,
+            #     warmup_method=cfg.SOLVER.WARMUP_METHOD,
+            #     power=cfg.SOLVER.POLY_LR_POWER,
+            #     constant_ending=cfg.SOLVER.POLY_LR_CONSTANT_ENDING,
+            # )
         else:
             raise ValueError("Unknown LR scheduler: {}".format(name))
 
@@ -230,6 +257,69 @@ class SegformerTrainer(DefaultTrainer):
             rescale_interval=cfg.SOLVER.RESCALE_INTERVAL
         )
         return LRMultiplier(optimizer, multiplier=sched, max_iter=cfg.SOLVER.MAX_ITER)
+
+    def build_hooks(self):
+        """
+        Build a list of default hooks, including timing, evaluation,
+        checkpointing, lr scheduling, precise BN, writing events.
+
+        Returns:
+            list[HookBase]:
+        """
+        cfg = self.cfg.clone()
+        cfg.defrost()
+        cfg.DATALOADER.NUM_WORKERS = 0  # save some memory and time for PreciseBN
+
+        ret = [
+            hooks.IterationTimer(),
+            hooks.LRScheduler(),
+            hooks.PreciseBN(
+                # Run at the same freq as (but before) evaluation.
+                cfg.TEST.EVAL_PERIOD,
+                self.model,
+                # Build a new data loader to not affect training
+                self.build_train_loader(cfg),
+                cfg.TEST.PRECISE_BN.NUM_ITER,
+            )
+            if cfg.TEST.PRECISE_BN.ENABLED and get_bn_modules(self.model)
+            else None,
+        ]
+
+        # Do PreciseBN before checkpointer, because it updates the model and need to
+        # be saved by checkpointer.
+        # This is not always the best: if checkpointing has a different frequency,
+        # some checkpoints may have more precise statistics than others.
+        if comm.is_main_process():
+            ret.append(hooks.PeriodicCheckpointer(self.checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD))
+
+        def test_and_save_results():
+            self._last_eval_results = self.test(self.cfg, self.model)
+            return self._last_eval_results
+
+        # Do evaluation after checkpointer, because then if it fails,
+        # we can use the saved checkpoint to debug.
+        ret.append(EvalHookWithDbLogging(log_db_name=self.cfg.TEST.OUTPUT_DB,
+                                         eval_period=cfg.TEST.EVAL_PERIOD,
+                                         eval_function=test_and_save_results))
+
+        if comm.is_main_process():
+            # Here the default print/log frequency of each writer is used.
+            # run writers in the end, so that evaluation metrics are written
+            ret.append(hooks.PeriodicWriter(self.build_writers(), period=20))
+        return ret
+
+    # Save training settings to db
+    def before_train(self):
+        if self.cfg.TEST.OUTPUT_DB is not None or self.cfg.TEST.OUTPUT_DB != "":
+            config_dump = self.cfg.dump()
+            db_engine = create_engine(url=self.cfg.TEST.OUTPUT_DB, echo=False)
+            db_meta = MetaData(bind=db_engine)
+            run_meta_data_table = Table("run_meta_data", db_meta, autoload_with=db_engine)
+            with db_engine.connect() as connection:
+                stmt = insert(run_meta_data_table).values({"run_id": self.runId, "configs": config_dump})
+                connection.execute(stmt)
+        for h in self._hooks:
+            h.before_train()
 
     def resume_or_load(self, resume=True):
         # Load Imagenet 1K weights into the Backbone
@@ -285,7 +375,6 @@ if __name__ == "__main__":
     trainer = SegformerTrainer(segformer_config)
     trainer.resume_or_load(resume=False)
     trainer.train()
-
 
     # cfg = get_cfg()
     # Segformer.add_segformer_config(cfg)

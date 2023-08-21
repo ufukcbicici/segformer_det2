@@ -80,6 +80,8 @@ def get_segformer_config(config_file):
 
     _C.INPUT.COLOR_AUG_SSD = False
 
+    _C.TEST.OUTPUT_DB = ""
+
     _C.merge_from_file(config_file)
     return _C
 
