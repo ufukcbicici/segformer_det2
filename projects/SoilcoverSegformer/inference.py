@@ -2,30 +2,48 @@
 import argparse
 import cv2
 import os
+
+from detectron2.data import build_detection_test_loader
+from detectron2.data.datasets.soilcover import register_all_soilcover
 from detectron2.engine import DefaultPredictor
 from detectron2.config import get_cfg
+from detectron2.evaluation import SemSegEvaluator, inference_on_dataset
 from detectron2.modeling.backbone.segformer import get_segformer_config
 from detectron2.utils.visualizer import Visualizer, ColorMode
 from detectron2.engine import default_argument_parser, default_setup, launch
 from detectron2.data.catalog import Metadata
+from utils import Utils
 
 
 def main(args):
     segformer_config = get_segformer_config(config_file="configs/segformer_config.yaml")
-    predictor = DefaultPredictor(segformer_config)
+    register_all_soilcover(cfg=segformer_config)
+    segformer_config.MODEL.PIXEL_MEAN = list(segformer_config.DATASETS.SOILCOVER.TRAIN_MEAN_PIXELS)
+    segformer_config.MODEL.PIXEL_STD = list(segformer_config.DATASETS.SOILCOVER.TRAIN_STD_PIXELS)
 
+    predictor = DefaultPredictor(segformer_config)
     model = predictor.model
+    data_loader = build_detection_test_loader(segformer_config, segformer_config.DATASETS.TEST[0])
+    evaluator = SemSegEvaluator(
+        segformer_config.DATASETS.TEST[0],
+        distributed=False,
+        num_classes=segformer_config.MODEL.SEGFORMER.NUM_CLASSES,
+        ignore_label=segformer_config.MODEL.SEM_SEG_HEAD.IGNORE_VALUE)
+    results = inference_on_dataset(model, data_loader, evaluator)
+
+    im_list = Utils.get_files_under_folder(root_path=segformer_config.DATASETS.SOILCOVER.VALIDATION_FILES[0])
+
     # dummy_input = Variable(torch.randn(1, 3, 256, 256))
-    im_list = []
-    if os.path.isfile(args.input[0]):
-        im_list.append(args.input[0])
-    else:
-        valid_images = [".jpg"]
-        for f in os.listdir(args.input[0]):
-            ext = os.path.splitext(f)[1]
-            if ext.lower() not in valid_images:
-                continue
-            im_list.append(os.path.join(args.input[0], f))
+    # im_list = []
+    # if os.path.isfile(args.input[0]):
+    #     im_list.append(args.input[0])
+    # else:
+    #     valid_images = [".jpg"]
+    #     for f in os.listdir(args.input[0]):
+    #         ext = os.path.splitext(f)[1]
+    #         if ext.lower() not in valid_images:
+    #             continue
+    #         im_list.append(os.path.join(args.input[0], f))
     # state_dict = torch.load('./output/model_0004999.pth')
     # model.load_state_dict(state_dict)
 
@@ -99,5 +117,3 @@ if __name__ == "__main__":
         args=(args,),
     )
 
-# call: --config-file ./configs/SemanticSegmentation/pointrend_semantic_R_101_FPN_1x_soilcover.yaml --input /shared_soilcover/2021-12-03_LfL_detectron2/01.06 --set MODEL.WEIGHTS=./output/model_final.pth
-# input ref: /shared/data/SoilCoverGitter/train/img/Rohrau_20121102_B2_1.jpg

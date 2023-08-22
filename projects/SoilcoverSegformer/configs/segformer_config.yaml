@@ -4,7 +4,8 @@ MODEL:
     NAME: "build_segformer_backbone"
   DEVICE: "cuda"
 
-  WEIGHTS: "./pretrained/mit_b0.pth"
+  # WEIGHTS: "./pretrained/mit_b0.pth"
+  WEIGHTS: "/home/josres/det2_clean/projects/SoilcoverSegformer/output_v1/model_0064999.pth"
 
   SEGFORMER:
     MODEL_TYPE: "mit_b0"
